@@ -23,7 +23,9 @@ const UserSchema = new mongoose.Schema({
     autoAnonymous: { type: Boolean, default: true },
     defaultLocation: { type: String, default: "" },
     role: { type: String, default: "citizen" },
-    approved: { type: Boolean, default: false }
+    approved: { type: Boolean, default: false },
+    karmaPoints: { type: Number, default: 0 },
+    badges: { type: [String], default: [] }
 }, { bufferCommands: false });
 const UserModel = mongoose.models.User || mongoose.model('User', UserSchema);
 
@@ -41,7 +43,10 @@ const IncidentSchema = new mongoose.Schema({
     downvotes: { type: Number, default: 0 },
     votes: { type: Map, of: String, default: {} },
     resolved: { type: Boolean, default: false },
-    resolvedBy: { type: String, default: "" }
+    resolvedBy: { type: String, default: "" },
+    severity: { type: String, default: "MEDIUM" },
+    attachments: { type: [String], default: [] },
+    chatHistory: { type: Array, default: [] }
 }, { bufferCommands: false });
 const IncidentModel = mongoose.models.Incident || mongoose.model('Incident', IncidentSchema);
 
@@ -485,7 +490,9 @@ app.post('/api/register', async (req, res) => {
             autoAnonymous: true,
             defaultLocation: "",
             role: assignedRole,
-            approved: false // pending approval
+            approved: false, // pending approval
+            karmaPoints: 0,
+            badges: []
         };
         saveLocalUsers(users);
         res.status(201).json({ success: true, pendingApproval: true });
@@ -553,7 +560,10 @@ app.get('/api/profile', async (req, res) => {
                     phone: user.phone || "",
                     emergencyContact: user.emergencyContact || "",
                     autoAnonymous: user.autoAnonymous !== false,
-                    defaultLocation: user.defaultLocation || ""
+                    defaultLocation: user.defaultLocation || "",
+                    role: user.role || "citizen",
+                    karmaPoints: user.karmaPoints || 0,
+                    badges: user.badges || []
                 });
             }
         } catch (e) {
@@ -572,7 +582,10 @@ app.get('/api/profile', async (req, res) => {
                     phone: userData.phone || "",
                     emergencyContact: userData.emergencyContact || "",
                     autoAnonymous: userData.autoAnonymous !== false,
-                    defaultLocation: userData.defaultLocation || ""
+                    defaultLocation: userData.defaultLocation || "",
+                    role: userData.role || "citizen",
+                    karmaPoints: userData.karmaPoints || 0,
+                    badges: userData.badges || []
                 });
             } else {
                 return res.json({
@@ -580,7 +593,10 @@ app.get('/api/profile', async (req, res) => {
                     phone: "",
                     emergencyContact: "",
                     autoAnonymous: true,
-                    defaultLocation: ""
+                    defaultLocation: "",
+                    role: "citizen",
+                    karmaPoints: 0,
+                    badges: []
                 });
             }
         }
@@ -813,14 +829,62 @@ app.get('/api/incidents', async (req, res) => {
     res.json(activeList);
 });
 
+// GET a single incident by ID
+app.get('/api/incidents/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        if (useMongoDB) {
+            const incident = await IncidentModel.findOne({ id });
+            if (!incident) return res.status(404).json({ error: "Incident not found" });
+            return res.json(incident);
+        } else {
+            const localList = getLocalIncidents();
+            const incident = localList.find(i => i.id === id);
+            if (!incident) return res.status(404).json({ error: "Incident not found" });
+            return res.json(incident);
+        }
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.post('/api/incidents', async (req, res) => {
     const newIncident = req.body;
     if (!newIncident || !newIncident.category || !newIncident.lat || !newIncident.lng) {
         return res.status(400).json({ error: "Invalid incident payload" });
     }
 
-    // Force date to ISO String format for clean date comparisons
-    newIncident.date = new Date().toISOString();
+    // Auto classify category & severity if not already specified, or refine based on description
+    const desc = (newIncident.description || "").toLowerCase();
+    let autoCategory = newIncident.category || "other";
+    let autoSeverity = "MEDIUM";
+
+    if (desc.includes("fire") || desc.includes("smoke") || desc.includes("burn") || desc.includes("explosion")) {
+        autoCategory = "fire";
+        autoSeverity = "CRITICAL";
+    } else if (desc.includes("fight") || desc.includes("assault") || desc.includes("weapon") || desc.includes("gun") || desc.includes("stab") || desc.includes("attack") || desc.includes("distress beacon")) {
+        autoCategory = "assault";
+        autoSeverity = "CRITICAL";
+    } else if (desc.includes("theft") || desc.includes("steal") || desc.includes("robbed") || desc.includes("thief") || desc.includes("burglar")) {
+        autoCategory = "theft";
+        autoSeverity = "MEDIUM";
+    } else if (desc.includes("roadblock") || desc.includes("traffic") || desc.includes("jam") || desc.includes("blocked") || desc.includes("construction")) {
+        autoCategory = "roadblock";
+        autoSeverity = "LOW";
+    } else if (desc.includes("hazard") || desc.includes("wire") || desc.includes("leak") || desc.includes("pothole") || desc.includes("accident")) {
+        autoCategory = "hazard";
+        autoSeverity = desc.includes("accident") ? "HIGH" : "MEDIUM";
+    }
+
+    newIncident.category = autoCategory;
+    newIncident.severity = autoSeverity;
+    newIncident.attachments = newIncident.attachments || [];
+    newIncident.chatHistory = newIncident.chatHistory || [];
+
+    // Use client-provided date if available, otherwise force current ISO date
+    if (!newIncident.date) {
+        newIncident.date = new Date().toISOString();
+    }
     newIncident.upvotes = 0;
     newIncident.downvotes = 0;
     newIncident.votes = {};
@@ -945,6 +1009,48 @@ app.post('/api/incidents/:id/vote', async (req, res) => {
     }
 });
 
+// Helper to award karma points and check/grant badges for incident resolution
+async function awardKarmaPoints(username) {
+    if (useMongoDB) {
+        try {
+            const user = await UserModel.findOne({ username });
+            if (user) {
+                user.karmaPoints = (user.karmaPoints || 0) + 100;
+                // Count resolved incidents by this user in MongoDB
+                const resolvedCount = await IncidentModel.countDocuments({ resolvedBy: username, resolved: true });
+                const badges = [];
+                if (resolvedCount >= 1) badges.push("Delhi Sentinel");
+                if (resolvedCount >= 5) badges.push("City Guardian");
+                if (resolvedCount >= 10) badges.push("Vigilante Commander");
+                user.badges = badges;
+                await user.save();
+                console.log(`Awarded 100 Karma Points & badges to ${username} (resolved count: ${resolvedCount})`);
+            }
+        } catch (e) {
+            console.error("MongoDB awardKarmaPoints error:", e);
+        }
+    } else {
+        try {
+            const users = getLocalUsers();
+            if (users[username]) {
+                users[username].karmaPoints = (users[username].karmaPoints || 0) + 100;
+                // Count resolved incidents in local JSON file
+                const localList = getLocalIncidents();
+                const resolvedCount = localList.filter(i => i.resolvedBy === username && i.resolved === true).length;
+                const badges = [];
+                if (resolvedCount >= 1) badges.push("Delhi Sentinel");
+                if (resolvedCount >= 5) badges.push("City Guardian");
+                if (resolvedCount >= 10) badges.push("Vigilante Commander");
+                users[username].badges = badges;
+                saveLocalUsers(users);
+                console.log(`[Local] Awarded 100 Karma Points & badges to ${username} (resolved count: ${resolvedCount})`);
+            }
+        } catch (e) {
+            console.error("Local awardKarmaPoints error:", e);
+        }
+    }
+}
+
 // POST mark incident as resolved (taken care of by vigilante)
 app.post('/api/incidents/:id/resolve', async (req, res) => {
     const { id } = req.params;
@@ -960,6 +1066,9 @@ app.post('/api/incidents/:id/resolve', async (req, res) => {
                 incident.resolved = true;
                 incident.resolvedBy = username;
                 const saved = await incident.save();
+                
+                // Award points and check badges
+                await awardKarmaPoints(username);
                 
                 // Broadcast update to all active SSE subscribers
                 const incidentObj = saved.toObject ? saved.toObject() : saved;
@@ -987,6 +1096,9 @@ app.post('/api/incidents/:id/resolve', async (req, res) => {
             incident.resolved = true;
             incident.resolvedBy = username;
             if (saveLocalIncidentsList(localList)) {
+                // Award points and check badges
+                await awardKarmaPoints(username);
+                
                 broadcastIncident(incident);
                 return res.json({
                     success: true,
@@ -1374,6 +1486,165 @@ app.get('/api/db-status', (req, res) => {
 });
 
 // Serve static dashboard web pages
+// POST send chat message to coordination channel of an active incident
+app.post('/api/incidents/:id/chat', async (req, res) => {
+    const { id } = req.params;
+    const { sender, message } = req.body;
+    if (!sender || !message) {
+        return res.status(400).json({ error: "sender and message required" });
+    }
+    const chatMessage = { sender, message, timestamp: new Date().toISOString() };
+
+    if (useMongoDB) {
+        try {
+            const incident = await IncidentModel.findOne({ id });
+            if (incident) {
+                if (!incident.chatHistory) incident.chatHistory = [];
+                incident.chatHistory.push(chatMessage);
+                await incident.save();
+                
+                // Broadcast update to all active SSE subscribers
+                const incidentObj = incident.toObject ? incident.toObject() : incident;
+                broadcastIncident(incidentObj);
+                
+                return res.json({ success: true, chatMessage });
+            } else {
+                return res.status(404).json({ error: "Incident not found" });
+            }
+        } catch (e) {
+            console.error("MongoDB chat post error:", e);
+            return res.status(500).json({ error: e.message });
+        }
+    }
+
+    // Local file fallback
+    try {
+        const localList = getLocalIncidents();
+        const incident = localList.find(i => i.id === id);
+        if (incident) {
+            if (!incident.chatHistory) incident.chatHistory = [];
+            incident.chatHistory.push(chatMessage);
+            if (saveLocalIncidentsList(localList)) {
+                broadcastIncident(incident);
+                return res.json({ success: true, chatMessage });
+            } else {
+                return res.status(500).json({ error: "Failed to persist chat message" });
+            }
+        } else {
+            return res.status(404).json({ error: "Incident not found" });
+        }
+    } catch (e) {
+        console.error("Local file chat post error:", e);
+        return res.status(500).json({ error: e.message });
+    }
+});
+
+// GET closest vigilantes to an incident (Proximity Dispatch)
+app.get('/api/incidents/:id/recommend-agent', async (req, res) => {
+    const { id } = req.params;
+    try {
+        let incident = null;
+        if (useMongoDB) {
+            incident = await IncidentModel.findOne({ id });
+        } else {
+            const localList = getLocalIncidents();
+            incident = localList.find(i => i.id === id);
+        }
+
+        if (!incident) {
+            return res.status(404).json({ error: "Incident not found" });
+        }
+
+        // Fetch all approved vigilantes
+        let vigilantes = [];
+        if (useMongoDB) {
+            vigilantes = await UserModel.find({ role: 'vigilante', approved: true });
+        } else {
+            const users = getLocalUsers();
+            for (let username in users) {
+                const u = users[username];
+                if (u.role === 'vigilante' && u.approved === true) {
+                    vigilantes.push({
+                        username,
+                        fullName: u.fullName || username,
+                        defaultLocation: u.defaultLocation
+                    });
+                }
+            }
+        }
+
+        const candidates = [];
+        vigilantes.forEach(v => {
+            if (!v.defaultLocation) return;
+            const parts = v.defaultLocation.split(',');
+            if (parts.length !== 2) return;
+            const vLat = parseFloat(parts[0]);
+            const vLng = parseFloat(parts[1]);
+            if (isNaN(vLat) || isNaN(vLng)) return;
+
+            // Calculate Haversine distance
+            const R = 6371; // km
+            const dLat = (vLat - incident.lat) * Math.PI / 180;
+            const dLng = (vLng - incident.lng) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(vLat * Math.PI / 180) * Math.cos(incident.lat * Math.PI / 180) *
+                      Math.sin(dLng/2) * Math.sin(dLng/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            const distance = R * c;
+
+            candidates.push({
+                username: v.username,
+                fullName: v.fullName || v.username,
+                distance: parseFloat(distance.toFixed(2))
+            });
+        });
+
+        // Sort by distance
+        candidates.sort((a, b) => a.distance - b.distance);
+        res.json(candidates.slice(0, 3));
+    } catch (e) {
+        console.error("Proximity recommendation error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// GET vigilante leaderboard ranking
+app.get('/api/leaderboard', async (req, res) => {
+    if (useMongoDB) {
+        try {
+            const users = await UserModel.find({ role: 'vigilante' })
+                .sort({ karmaPoints: -1 })
+                .limit(10)
+                .select('username fullName karmaPoints badges');
+            return res.json(users);
+        } catch (e) {
+            console.error("MongoDB leaderboard error:", e);
+        }
+    }
+
+    // Local file fallback
+    try {
+        const users = getLocalUsers();
+        const list = [];
+        for (let username in users) {
+            const u = users[username];
+            if (u.role === 'vigilante') {
+                list.push({
+                    username,
+                    fullName: u.fullName || username,
+                    karmaPoints: u.karmaPoints || 0,
+                    badges: u.badges || []
+                });
+            }
+        }
+        list.sort((a, b) => b.karmaPoints - a.karmaPoints);
+        res.json(list.slice(0, 10));
+    } catch (e) {
+        console.error("Local file leaderboard error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.use(express.static(__dirname));
 
 app.get('/', (req, res) => {

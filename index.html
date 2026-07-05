@@ -207,6 +207,13 @@
                 <div class="section-meta">
                     <h3>Incidents in Scanning Area (<span id="incident-count">0</span>)</h3>
                 </div>
+                <!-- Date Filter Buttons System -->
+                <div class="feed-date-filters" style="display: flex; gap: 8px; margin-bottom: 12px; overflow-x: auto; padding-bottom: 4px;">
+                    <button class="btn-filter-date active" data-range="all" style="padding: 4px 8px; font-size: 0.7rem; border-radius: 4px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap;">All Time</button>
+                    <button class="btn-filter-date" data-range="today" style="padding: 4px 8px; font-size: 0.7rem; border-radius: 4px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap;">Today</button>
+                    <button class="btn-filter-date" data-range="3days" style="padding: 4px 8px; font-size: 0.7rem; border-radius: 4px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap;">3 Days</button>
+                    <button class="btn-filter-date" data-range="week" style="padding: 4px 8px; font-size: 0.7rem; border-radius: 4px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.05); color: #fff; cursor: pointer; white-space: nowrap;">Weekly</button>
+                </div>
                 <div class="feed-list" id="fnsm-feed-list">
                     <!-- Logs dynamically loaded here -->
                 </div>
@@ -239,13 +246,24 @@
                             <button type="button" id="btn-select-location" class="btn-action-outline">GPS Capture</button>
                         </div>
                     </div>
-                    <div class="form-group">
-                        <label for="report-time">Incident Time</label>
-                        <input type="time" id="report-time" required>
+                    <div class="form-row-double" style="display: flex; gap: 15px;">
+                        <div class="form-group" style="flex: 1;">
+                            <label for="report-date">Incident Date</label>
+                            <input type="date" id="report-date" required>
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label for="report-time">Incident Time</label>
+                            <input type="time" id="report-time" required>
+                        </div>
                     </div>
+
                     <div class="form-group">
                         <label for="report-description">Detailed Description</label>
                         <textarea id="report-description" rows="4" placeholder="Detail the observed sin / crime incident..." required></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="report-evidence">Evidence Attachment (Photo / Screenshot)</label>
+                        <input type="file" id="report-evidence" accept="image/*" style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); color: #fff; padding: 6px; border-radius: 6px; width: 100%; cursor: pointer;">
                     </div>
                     <div class="form-group checkbox-row">
                         <input type="checkbox" id="report-anonymous" checked>
@@ -257,6 +275,20 @@
 
             <!-- TAB 3: USER PROFILE & PREFERENCES -->
             <div id="tab-profile" class="tab-panel">
+                <!-- User Points & Badges Summary Banner -->
+                <div class="profile-stats-card" style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-bottom: 15px; display: flex; align-items: center; gap: 15px;">
+                    <div style="text-align: center; border-right: 1px solid var(--border-color); padding-right: 15px;">
+                        <div style="font-size: 0.65rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 1px;">Karma Points</div>
+                        <div id="user-karma-points" style="font-size: 1.8rem; font-weight: bold; color: #38bdf8; font-family: 'Orbitron', sans-serif;">0</div>
+                    </div>
+                    <div style="flex: 1;">
+                        <div style="font-size: 0.65rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">Earned Badges</div>
+                        <div id="user-badges-container" style="display: flex; flex-wrap: wrap; gap: 6px;">
+                            <span style="font-size: 0.7rem; color: var(--text-secondary); font-style: italic;">No badges earned yet. Complete resolutions to unlock!</span>
+                        </div>
+                    </div>
+                </div>
+
                 <form id="profile-form" class="dashboard-form" onsubmit="return false;">
                     <div class="form-group">
                         <label for="profile-fullname">Full Name</label>
@@ -287,6 +319,17 @@
                       </div>
                     <button type="submit" class="btn-action-primary">Save Settings</button>
                 </form>
+
+                <!-- Vigilante Leaderboard Panel -->
+                <div class="leaderboard-panel" style="margin-top: 25px; border-top: 1px solid var(--border-color); padding-top: 15px;">
+                    <h3 style="font-family: 'Orbitron', sans-serif; font-size: 0.95rem; margin-bottom: 12px; color: #cbd5e1; letter-spacing: 1px; display: flex; align-items: center; gap: 8px;">
+                        <span>🏆</span> <span>VIGILANTE LEADERBOARD</span>
+                    </h3>
+                    <div id="leaderboard-container" style="display: flex; flex-direction: column; gap: 8px; background: rgba(0,0,0,0.2); border-radius: 6px; padding: 10px; border: 1px solid rgba(255,255,255,0.04);">
+                        <!-- Leaderboard rankings loaded dynamically -->
+                        <div style="font-size: 0.75rem; color: var(--text-secondary); text-align: center; padding: 10px; font-style: italic;">Loading rankings...</div>
+                    </div>
+                </div>
             </div>
 
             <!-- TAB 4: ADMINISTRATOR CONTROLS -->
@@ -402,6 +445,12 @@
                 <line x1="12" y1="3" x2="12" y2="21"></line>
             </svg>
         </button>
+        <button id="btn-heatmap-toggle" class="map-ctrl-btn" title="Toggle Crime Density Heatmap" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2c-4 4-6 8.5-6 11.5c0 3 2.5 5.5 6 5.5s6-2.5 6-5.5C18 10.5 16 6 12 2z"></path>
+                <path d="M12 9c-2 2-3 4-3 5.5c0 1.5 1.5 2.5 3 2.5s3-1 3-2.5C15 13 14 11 12 9z" opacity="0.7"></path>
+            </svg>
+        </button>
         <button id="btn-map-style" class="map-ctrl-btn" title="Toggle Map Style" type="button">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
@@ -443,6 +492,20 @@
             <div id="nav-steps-list" style="display: flex; flex-direction: column; gap: 8px; font-size: 0.72rem; max-height: 180px; overflow-y: auto; padding-right: 4px;">
                 <!-- Steps loaded dynamically -->
             </div>
+            <!-- Tactical Coordination Chat Widget -->
+            <div id="tactical-chat-container" style="border-top: 1px solid var(--border-color); padding-top: 10px; margin-top: 4px; display: flex; flex-direction: column; gap: 6px;">
+                <span style="font-weight: bold; font-size: 0.75rem; color: var(--text-primary); display: flex; align-items: center; gap: 4px;">
+                    💬 Tactical Coordination Chat:
+                </span>
+                <div id="tactical-chat-messages" style="background: rgba(0,0,0,0.3); border-radius: 4px; border: 1px solid rgba(255,255,255,0.04); padding: 6px; font-size: 0.68rem; max-height: 100px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;">
+                    <span style="color: var(--text-secondary); font-style: italic;">No dispatch transmission yet...</span>
+                </div>
+                <div style="display: flex; gap: 6px;">
+                    <input type="text" id="tactical-chat-input" placeholder="Type transmission..." style="flex: 1; font-size: 0.7rem; padding: 4px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); color: #fff; border-radius: 4px;">
+                    <button type="button" id="btn-send-tactical-chat" style="padding: 4px 8px; font-size: 0.7rem; background: var(--color-primary); color: #000; border: none; border-radius: 4px; font-weight: bold; cursor: pointer;">Send</button>
+                </div>
+            </div>
+
             <div id="nav-resolve-container" style="border-top: 1px solid var(--border-color); padding-top: 10px; margin-top: 4px;">
                 <button id="btn-resolve-navigation" class="btn-action-primary" style="width: 100%; font-size: 0.72rem; padding: 8px; font-weight: bold; border-radius: 6px; display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; border: none;" type="button">
                     ✅ Resolve Incident

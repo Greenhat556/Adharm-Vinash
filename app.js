@@ -10,6 +10,9 @@ let audioCtx = null;
 let activeOscillators = [];
 let isDispatchingSOS = false;
 let notificationEventSource = null;
+let activeDateRange = 'all';
+let isHeatmapActive = false;
+let heatmapEntities = [];
 
 // User Geolocation tracking variables
 let isTrackingLocation = false;
@@ -482,7 +485,33 @@ function stopSSEConnection() {
 }
 
 function handleLiveIncidentNotification(incident) {
-    if (!incidents.some(i => i.id === incident.id)) {
+    const existingIndex = incidents.findIndex(i => i.id === incident.id);
+    if (existingIndex !== -1) {
+        // Update incident in the local cache list
+        incidents[existingIndex] = incident;
+        renderMarkers();
+        updateFeedList();
+
+        // If the updated incident is the one we are currently navigating to, refresh chat HUD
+        if (isNavigating && navigatingIncidentId === incident.id) {
+            renderTacticalChat(incident.chatHistory || []);
+        }
+
+        // If the updated incident is currently selected on the map, refresh Cesium popup bubble
+        if (selectedEntity && selectedEntity.id === incident.id) {
+            const ent = viewer.entities.getById(incident.id);
+            if (ent) {
+                ent.properties.upvotes = incident.upvotes || 0;
+                ent.properties.downvotes = incident.downvotes || 0;
+                ent.properties.votes = incident.votes || {};
+                ent.properties.resolved = !!incident.resolved;
+                ent.properties.resolvedBy = incident.resolvedBy || "";
+                ent.properties.severity = incident.severity || "MEDIUM";
+                ent.properties.attachments = incident.attachments || [];
+                openCesiumPopup(ent);
+            }
+        }
+    } else {
         incidents.push(incident);
         renderMarkers();
         updateFeedList();
@@ -490,14 +519,62 @@ function handleLiveIncidentNotification(incident) {
         if (sessionStorage.getItem('auth_user') === 'admin') {
             loadAdminData();
         }
+
+        playAlertBeep(880, 0.15);
+        setTimeout(() => {
+            playAlertBeep(1046.50, 0.2);
+        }, 150);
+        
+        showLiveNotificationToast(incident);
     }
-    
-    playAlertBeep(880, 0.15);
-    setTimeout(() => {
-        playAlertBeep(1046.50, 0.2);
-    }, 150);
-    
-    showLiveNotificationToast(incident);
+}
+
+function renderTacticalChat(chatHistory) {
+    const chatMessages = document.getElementById('tactical-chat-messages');
+    if (!chatMessages) return;
+    chatMessages.innerHTML = '';
+    if (!chatHistory || chatHistory.length === 0) {
+        chatMessages.innerHTML = `<span style="color: var(--text-secondary); font-style: italic;">No dispatch transmission yet...</span>`;
+        return;
+    }
+    chatHistory.forEach(c => {
+        const timeStr = new Date(c.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const senderName = c.sender;
+        const activeUser = sessionStorage.getItem('auth_user') || '';
+        const senderStyle = c.sender === activeUser ? 'color: #38bdf8; font-weight: bold;' : 'color: #10b981; font-weight: bold;';
+        
+        chatMessages.innerHTML += `
+            <div style="margin-bottom: 2px;">
+                <span style="color: var(--text-secondary); font-size: 0.6rem;">[${timeStr}]</span>
+                <span style="${senderStyle}">${senderName}:</span>
+                <span style="color: #cbd5e1;">${c.message}</span>
+            </div>
+        `;
+    });
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+async function sendTacticalChatMessage() {
+    const input = document.getElementById('tactical-chat-input');
+    if (!input || !input.value.trim() || !navigatingIncidentId) return;
+
+    const message = input.value.trim();
+    const sender = sessionStorage.getItem('auth_user') || 'Anonymous';
+
+    input.value = '';
+
+    try {
+        const res = await fetch(`/api/incidents/${navigatingIncidentId}/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sender, message })
+        });
+        if (!res.ok) {
+            console.error("Failed to send tactical message");
+        }
+    } catch (e) {
+        console.error("Tactical message send error:", e);
+    }
 }
 
 function showLiveNotificationToast(incident) {
@@ -806,8 +883,26 @@ function openCesiumPopup(entity) {
     const cat = entity.properties.category.getValue();
     const desc = entity.properties.description.getValue();
     const time = entity.properties.time.getValue();
+    const dateVal = entity.properties.date ? entity.properties.date.getValue() : "";
     const isAnon = entity.properties.anonymous.getValue();
     const entityId = entity.id;
+    const severity = entity.properties.severity ? entity.properties.severity.getValue() : "MEDIUM";
+    const attachments = entity.properties.attachments ? entity.properties.attachments.getValue() : [];
+
+    let displayTime = time;
+    if (dateVal) {
+        try {
+            const d = new Date(dateVal);
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const date = String(d.getDate()).padStart(2, '0');
+            const hours = String(d.getHours()).padStart(2, '0');
+            const mins = String(d.getMinutes()).padStart(2, '0');
+            displayTime = `${year}-${month}-${date} ${hours}:${mins}`;
+        } catch (e) {
+            displayTime = time;
+        }
+    }
 
     const isResolved = entity.properties.resolved ? entity.properties.resolved.getValue() : false;
     const resolvedBy = entity.properties.resolvedBy ? entity.properties.resolvedBy.getValue() : "";
@@ -881,21 +976,71 @@ function openCesiumPopup(entity) {
         actionButtonsHtml = verifyHtml + navHtml;
     }
 
+    let severityColor = "#eab308";
+    if (severity === "CRITICAL") severityColor = "#ef4444";
+    if (severity === "HIGH") severityColor = "#f97316";
+    if (severity === "LOW") severityColor = "#06b6d4";
+
+    let attachmentHtml = '';
+    if (attachments && attachments.length > 0) {
+        attachmentHtml = `
+            <div style="margin-top: 8px; margin-bottom: 8px; border-radius: 6px; overflow: hidden; border: 1px solid rgba(255,255,255,0.08);">
+                <img src="${attachments[0]}" style="width: 100%; max-height: 120px; object-fit: cover; display: block;" alt="Evidence Attachment">
+            </div>
+        `;
+    }
+
     popupContent.innerHTML = `
         <div style="border-top: 3px solid ${style.color}; padding-top: 4px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                <h4 style="color: ${style.color}; font-weight: 700; margin: 0; font-size: 0.85rem;">${style.label}</h4>
+                <h4 style="color: ${style.color}; font-weight: 700; margin: 0; font-size: 0.85rem; display: inline-flex; align-items: center; gap: 6px;">
+                    <span>${style.label}</span>
+                    <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: ${severityColor}; box-shadow: 0 0 8px ${severityColor};" title="Severity: ${severity}"></span>
+                </h4>
                 <span style="${statusStyle}">${statusText}</span>
             </div>
             <p style="margin-bottom: 8px; font-size: 0.8rem; line-height: 1.4;">${desc}</p>
+            ${attachmentHtml}
             <div class="popup-footer-hud" style="margin-bottom: 10px;">
-                <span>Logged: ${time}</span>
+                <span>Logged: ${displayTime}</span>
                 <span>${isAnon ? 'Anonymous' : 'Precinct Sync'}</span>
+            </div>
+            <div id="proximity-recommendations-${entityId}" style="border-top: 1px solid rgba(255,255,255,0.06); padding-top: 6px; margin-top: 6px; font-size: 0.65rem; line-height: 1.3;">
+                <span style="color: var(--text-secondary); font-style: italic;">Calculating closest responders...</span>
             </div>
             ${actionButtonsHtml}
         </div>
     `;
     
+    // Fetch and render closest vigilante agents
+    fetch(`/api/incidents/${entityId}/recommend-agent`)
+        .then(res => res.json())
+        .then(agents => {
+            const container = document.getElementById(`proximity-recommendations-${entityId}`);
+            if (container) {
+                if (!agents || agents.length === 0) {
+                    container.innerHTML = `<span style="color: var(--text-secondary); font-style: italic;">🕵️ Proximity Dispatch: No active responders in Scanner.</span>`;
+                } else {
+                    let html = `<div style="font-weight: bold; color: var(--text-primary); margin-bottom: 4px; display: flex; align-items: center; gap: 4px;">🕵️ PROXIMITY DISPATCH RECOMMENDATIONS:</div>`;
+                    agents.forEach((a, index) => {
+                        const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : '🥉';
+                        html += `<div style="display: flex; justify-content: space-between; color: var(--text-secondary); margin-bottom: 2px;">
+                            <span>${medal} ${a.fullName}</span>
+                            <span style="color: #38bdf8; font-family: monospace; font-weight: bold;">${a.distance} km</span>
+                        </div>`;
+                    });
+                    container.innerHTML = html;
+                }
+            }
+        })
+        .catch(err => {
+            console.error("Proximity dispatch fetch error:", err);
+            const container = document.getElementById(`proximity-recommendations-${entityId}`);
+            if (container) {
+                container.innerHTML = `<span style="color: var(--color-danger); font-style: italic;">🕵️ Proximity Dispatch: Calculation error.</span>`;
+            }
+        });
+
     popupElement.classList.remove('hidden');
     updatePopupPosition();
     playAlertBeep(520, 0.1);
@@ -972,30 +1117,118 @@ function renderMarkers() {
                 category: item.category,
                 description: item.description,
                 time: item.time,
+                date: item.date || "",
                 anonymous: item.anonymous,
                 upvotes: item.upvotes || 0,
                 downvotes: item.downvotes || 0,
                 votes: item.votes || {},
                 resolved: isResolved,
-                resolvedBy: item.resolvedBy || ""
+                resolvedBy: item.resolvedBy || "",
+                severity: item.severity || "MEDIUM",
+                attachments: item.attachments || []
             }
         });
     });
+    // Re-render heatmap overlay layer in sync with markers
+    renderHeatmap();
+}
+
+function renderHeatmap() {
+    // Remove existing heatmap entities
+    heatmapEntities.forEach(ent => viewer.entities.remove(ent));
+    heatmapEntities = [];
+
+    if (!isHeatmapActive) return;
+
+    // Draw overlapping semi-transparent ellipses at active incident coordinates
+    incidents.forEach(item => {
+        if (item.resolved) return; // Skip resolved incidents in density heatmap
+
+        let glowRadius = 250.0; // 250 meters
+        let glowColor = '#ef4444'; // Red default
+
+        if (item.severity === 'CRITICAL') {
+            glowRadius = 400.0;
+        } else if (item.severity === 'LOW') {
+            glowRadius = 150.0;
+            glowColor = '#06b6d4'; // Cyan
+        }
+
+        const ellipseEnt = viewer.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(item.lng, item.lat),
+            ellipse: {
+                semiMajorAxis: glowRadius,
+                semiMinorAxis: glowRadius,
+                material: Cesium.Color.fromCssColorString(glowColor).withAlpha(0.18),
+                height: 5.0, // Floating slightly above ground
+                outline: false
+            }
+        });
+        heatmapEntities.push(ellipseEnt);
+    });
+}
+
+function toggleHeatmap() {
+    isHeatmapActive = !isHeatmapActive;
+    const btn = document.getElementById('btn-heatmap-toggle');
+    if (btn) {
+        if (isHeatmapActive) {
+            btn.classList.add('active');
+            btn.style.background = 'rgba(239, 68, 68, 0.15)';
+            btn.style.borderColor = '#ef4444';
+            btn.style.color = '#ef4444';
+        } else {
+            btn.classList.remove('active');
+            btn.style.background = '';
+            btn.style.borderColor = '';
+            btn.style.color = '';
+        }
+    }
+    renderHeatmap();
+    playAlertBeep(520, 0.15);
 }
 
 function updateFeedList() {
     const listContainer = document.getElementById('fnsm-feed-list');
     const countSpan = document.getElementById('incident-count');
     
-    countSpan.textContent = incidents.length;
+    // Filter incidents based on activeDateRange
+    let filtered = [...incidents];
+    const now = new Date();
+    if (activeDateRange === 'today') {
+        const startOfToday = new Date();
+        startOfToday.setHours(0,0,0,0);
+        filtered = filtered.filter(item => {
+            const itemDate = new Date(item.date || item.timestamp);
+            return itemDate >= startOfToday;
+        });
+    } else if (activeDateRange === '3days') {
+        const threeDaysAgo = new Date();
+        threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+        threeDaysAgo.setHours(0,0,0,0);
+        filtered = filtered.filter(item => {
+            const itemDate = new Date(item.date || item.timestamp);
+            return itemDate >= threeDaysAgo;
+        });
+    } else if (activeDateRange === 'week') {
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        sevenDaysAgo.setHours(0,0,0,0);
+        filtered = filtered.filter(item => {
+            const itemDate = new Date(item.date || item.timestamp);
+            return itemDate >= sevenDaysAgo;
+        });
+    }
+
+    countSpan.textContent = filtered.length;
     listContainer.innerHTML = '';
 
-    if (incidents.length === 0) {
-        listContainer.innerHTML = `<div class="status-msg">No active logs registered in scanning region.</div>`;
+    if (filtered.length === 0) {
+        listContainer.innerHTML = `<div class="status-msg">No active logs registered in this date range.</div>`;
         return;
     }
 
-    const sorted = [...incidents].reverse();
+    const sorted = filtered.reverse();
 
     sorted.forEach(item => {
         const style = CATEGORY_STYLES[item.category] || { color: '#3b82f6', label: 'ALERT' };
@@ -1021,13 +1254,48 @@ function updateFeedList() {
             badgeStyle = 'color: var(--color-danger); background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.2); padding: 2px 6px; border-radius: 4px;';
         }
 
+        // Format ISO date string into readable local YYYY-MM-DD HH:MM
+        let displayTime = item.time;
+        if (item.date) {
+            try {
+                const d = new Date(item.date);
+                const year = d.getFullYear();
+                const month = String(d.getMonth() + 1).padStart(2, '0');
+                const date = String(d.getDate()).padStart(2, '0');
+                const hours = String(d.getHours()).padStart(2, '0');
+                const mins = String(d.getMinutes()).padStart(2, '0');
+                displayTime = `${year}-${month}-${date} ${hours}:${mins}`;
+            } catch (e) {
+                displayTime = item.time;
+            }
+        }
+
+        const severityStr = item.severity || "MEDIUM";
+        let severityColor = "#eab308";
+        if (severityStr === "CRITICAL") severityColor = "#ef4444";
+        if (severityStr === "HIGH") severityColor = "#f97316";
+        if (severityStr === "LOW") severityColor = "#06b6d4";
+
+        let attachmentHtml = '';
+        if (item.attachments && item.attachments.length > 0) {
+            attachmentHtml = `
+                <div class="card-attachments" style="margin-top: 8px;">
+                    <img src="${item.attachments[0]}" style="width: 100%; max-height: 120px; object-fit: cover; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);" alt="Evidence attachment">
+                </div>
+            `;
+        }
+
         card.innerHTML = `
             <div class="card-header-hud">
-                <span class="card-category">${style.label}</span>
-                <span>${item.time}</span>
+                <span class="card-category" style="display: inline-flex; align-items: center; gap: 6px;">
+                    <span>${style.label}</span>
+                    <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: ${severityColor}; box-shadow: 0 0 8px ${severityColor};" title="Severity: ${severityStr}"></span>
+                </span>
+                <span>${displayTime}</span>
             </div>
             <div class="card-title">Coordinates: [${item.lat.toFixed(4)}, ${item.lng.toFixed(4)}]</div>
             <div class="card-desc">${item.description}</div>
+            ${attachmentHtml}
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.04); padding-top: 6px; font-size: 0.65rem;">
                 <span style="${badgeStyle}">${badgeText}</span>
                 <span style="color: var(--text-secondary);">👍 ${upCount} / 👎 ${downCount}</span>
@@ -1137,6 +1405,39 @@ function getMapCenter() {
 function setupUIEventListeners() {
     const tabLinks = document.querySelectorAll('.tab-link');
     const tabPanels = document.querySelectorAll('.tab-panel');
+
+    // Set default report date input to today's date
+    const reportDateInput = document.getElementById('report-date');
+    if (reportDateInput) {
+        reportDateInput.value = new Date().toISOString().split('T')[0];
+    }
+
+    // Set up date range filter buttons
+    const filterButtons = document.querySelectorAll('.btn-filter-date');
+    filterButtons.forEach(btn => {
+        // Initial active style
+        if (btn.classList.contains('active')) {
+            btn.style.background = 'rgba(6, 182, 212, 0.15)';
+            btn.style.borderColor = '#06b6d4';
+            btn.style.color = '#06b6d4';
+        }
+        btn.addEventListener('click', () => {
+            filterButtons.forEach(b => {
+                b.classList.remove('active');
+                b.style.background = 'rgba(255,255,255,0.05)';
+                b.style.borderColor = 'var(--border-color)';
+                b.style.color = '#fff';
+            });
+            btn.classList.add('active');
+            btn.style.background = 'rgba(6, 182, 212, 0.15)';
+            btn.style.borderColor = '#06b6d4';
+            btn.style.color = '#06b6d4';
+            
+            activeDateRange = btn.getAttribute('data-range');
+            updateFeedList();
+            playAlertBeep(520, 0.05);
+        });
+    });
 
     // Close button for popup
     document.getElementById('cesium-popup-close').addEventListener('click', () => {
@@ -1589,17 +1890,29 @@ function setupUIEventListeners() {
         playAlertBeep(700, 0.08);
     });
 
+    // Helper to read files as Base64 strings
+    function getBase64(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = error => reject(error);
+        });
+    }
+
     // 4. Submit Incident Report form
     const form = document.getElementById('incident-form');
-    form.addEventListener('submit', (e) => {
+    form.addEventListener('submit', async (e) => {
         e.preventDefault();
         
         const category = document.getElementById('report-category').value;
         const address = document.getElementById('report-address').value;
         const locVal = document.getElementById('report-location').value;
+        const dateVal = document.getElementById('report-date').value;
         const time = document.getElementById('report-time').value;
         const description = document.getElementById('report-description').value;
         const anonymous = document.getElementById('report-anonymous').checked;
+        const evidenceInput = document.getElementById('report-evidence');
 
         if (!locVal) {
             alert("Please input an address or capture location coordinates on the map first.");
@@ -1610,6 +1923,25 @@ function setupUIEventListeners() {
         const lat = parseFloat(latStr);
         const lng = parseFloat(lngStr);
 
+        let isoDate = new Date().toISOString();
+        if (dateVal && time) {
+            try {
+                isoDate = new Date(`${dateVal}T${time}`).toISOString();
+            } catch (e) {
+                console.error("Failed to parse combined date-time:", e);
+            }
+        }
+
+        let attachments = [];
+        if (evidenceInput && evidenceInput.files && evidenceInput.files[0]) {
+            try {
+                const base64Str = await getBase64(evidenceInput.files[0]);
+                attachments.push(base64Str);
+            } catch (err) {
+                console.error("Failed to convert evidence file to Base64:", err);
+            }
+        }
+
         const newIncident = {
             id: 'user-' + Date.now(),
             category,
@@ -1618,24 +1950,26 @@ function setupUIEventListeners() {
             time,
             description: `${address}: ${description}`,
             anonymous,
-            date: new Date().toISOString() // Save in parseable ISO string
+            date: isoDate,
+            attachments
         };
 
         // Post incident to backend Express database
-        fetch('/api/incidents', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(newIncident)
-        })
-        .then(response => {
+        try {
+            const response = await fetch('/api/incidents', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(newIncident)
+            });
+
             if (!response.ok) {
-                throw new Error("HTTP error on POST incident");
+                const errData = await response.json();
+                throw new Error(errData.error || "HTTP error on POST incident");
             }
-            return response.json();
-        })
-        .then(savedData => {
+
+            const savedData = await response.json();
             if (!incidents.some(i => i.id === savedData.id)) {
                 incidents.push(savedData);
                 renderMarkers();
@@ -1643,6 +1977,7 @@ function setupUIEventListeners() {
             }
             
             form.reset();
+            document.getElementById('report-date').value = new Date().toISOString().split('T')[0];
             document.getElementById('btn-select-location').textContent = "GPS Capture";
             
             playAlertBeep(1000, 0.2);
@@ -1657,12 +1992,11 @@ function setupUIEventListeners() {
                 },
                 duration: 2.0
             });
-        })
-        .catch(error => {
+        } catch (error) {
             console.error("Failed to persist incident to database:", error);
             playAlertBeep(300, 0.2);
             alert("ADHARM VINASH ERROR: " + error.message);
-        });
+        }
     });
 
     // 5. Routing Simulator Toggle
@@ -1724,6 +2058,22 @@ function setupUIEventListeners() {
         });
     }
 
+    // Tactical chat send bindings
+    const sendChatBtn = document.getElementById('btn-send-tactical-chat');
+    if (sendChatBtn) {
+        sendChatBtn.addEventListener('click', () => {
+            sendTacticalChatMessage();
+        });
+    }
+    const chatInput = document.getElementById('tactical-chat-input');
+    if (chatInput) {
+        chatInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                sendTacticalChatMessage();
+            }
+        });
+    }
+
     // Resolve navigation button binding
     const resolveNavBtn = document.getElementById('btn-resolve-navigation');
     if (resolveNavBtn) {
@@ -1733,6 +2083,14 @@ function setupUIEventListeners() {
             } else {
                 alert("No active incident to resolve in tactical HUD.");
             }
+        });
+    }
+
+    // Toggle Crime Density Heatmap button binding
+    const heatmapToggleBtn = document.getElementById('btn-heatmap-toggle');
+    if (heatmapToggleBtn) {
+        heatmapToggleBtn.addEventListener('click', () => {
+            toggleHeatmap();
         });
     }
 
@@ -2202,6 +2560,17 @@ async function initiateNavigation(destLat, destLng, destId) {
         destination: Cesium.Cartesian3.fromDegrees(midpointLng, midpointLat, cameraHeight),
         duration: 2.0
     });
+
+    // Fetch and load initial chat history for coordination
+    fetch(`/api/incidents/${destId}`)
+        .then(res => res.json())
+        .then(incident => {
+            renderTacticalChat(incident.chatHistory || []);
+        })
+        .catch(err => {
+            console.error("Failed to load initial tactical chat:", err);
+            renderTacticalChat([]);
+        });
 }
 
 function generateMockNavigationRoute(startLat, startLng, endLat, endLng) {
@@ -2490,6 +2859,24 @@ async function loadUserProfile(username) {
             // Apply preferences to reporting screen
             document.getElementById('report-anonymous').checked = data.autoAnonymous !== false;
 
+            // Populate Points & Badges
+            document.getElementById('user-karma-points').textContent = data.karmaPoints || 0;
+            const badgesContainer = document.getElementById('user-badges-container');
+            if (badgesContainer) {
+                badgesContainer.innerHTML = '';
+                const badges = data.badges || [];
+                if (badges.length === 0) {
+                    badgesContainer.innerHTML = `<span style="font-size: 0.7rem; color: var(--text-secondary); font-style: italic;">No badges earned yet. Complete resolutions to unlock!</span>`;
+                } else {
+                    badges.forEach(b => {
+                        badgesContainer.innerHTML += `<span style="font-size: 0.65rem; color: #38bdf8; background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.3); padding: 2px 8px; border-radius: 4px; font-weight: bold; font-family: monospace;">🛡️ ${b}</span>`;
+                    });
+                }
+            }
+
+            // Load Leaderboard list
+            loadLeaderboard();
+
             // Handle map centering preference
             if (data.defaultLocation) {
                 const parts = data.defaultLocation.split(',');
@@ -2514,6 +2901,39 @@ async function loadUserProfile(username) {
         }
     } catch (e) {
         console.error("Failed to load user profile:", e);
+    }
+}
+
+async function loadLeaderboard() {
+    const container = document.getElementById('leaderboard-container');
+    if (!container) return;
+    try {
+        const res = await fetch('/api/leaderboard');
+        const list = await res.json();
+        if (res.ok) {
+            container.innerHTML = '';
+            if (list.length === 0) {
+                container.innerHTML = `<div style="font-size: 0.75rem; color: var(--text-secondary); text-align: center; padding: 10px; font-style: italic;">No registered vigilantes in Delhi scanner.</div>`;
+            } else {
+                list.forEach((u, idx) => {
+                    const crown = idx === 0 ? '👑 ' : idx === 1 ? '🥈 ' : idx === 2 ? '🥉 ' : `#${idx + 1} `;
+                    const activeUser = sessionStorage.getItem('auth_user') || '';
+                    const highlightStyle = u.username === activeUser ? 'background: rgba(56,189,248,0.06); border: 1px solid rgba(56,189,248,0.25);' : '';
+                    
+                    container.innerHTML += `
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-radius: 4px; font-size: 0.75rem; ${highlightStyle}">
+                            <span style="font-weight: bold; font-family: monospace; display: flex; align-items: center; gap: 6px;">
+                                <span style="color: #94a3b8;">${crown}</span>
+                                <span>${u.fullName || u.username}</span>
+                            </span>
+                            <span style="font-weight: bold; color: #38bdf8; font-family: 'Orbitron', sans-serif;">${u.karmaPoints} XP</span>
+                        </div>
+                    `;
+                });
+            }
+        }
+    } catch (e) {
+        console.error("Failed to load leaderboard:", e);
     }
 }
 
