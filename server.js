@@ -64,21 +64,21 @@ const ResetRequestModel = mongoose.models.ResetRequest || mongoose.model('ResetR
 function getLocalResetRequests() {
     try {
         if (!fs.existsSync(RESET_REQUESTS_FILE)) {
-            fs.writeFileSync(RESET_REQUESTS_FILE, JSON.stringify([], null, 2), 'utf8');
+            atomicWriteFileSync(RESET_REQUESTS_FILE, JSON.stringify([], null, 2));
             return [];
         }
         const raw = fs.readFileSync(RESET_REQUESTS_FILE, 'utf8');
         if (!raw.trim()) return [];
         return JSON.parse(raw);
     } catch (e) {
-        console.error("Local reset requests db read error:", e);
-        throw new Error("Database read error: reset_requests.json is invalid JSON or unreadable.");
+        console.error("Local reset requests db read error (returning fallback empty array):", e);
+        return [];
     }
 }
 
 function saveLocalResetRequests(list) {
     try {
-        fs.writeFileSync(RESET_REQUESTS_FILE, JSON.stringify(list, null, 2), 'utf8');
+        atomicWriteFileSync(RESET_REQUESTS_FILE, JSON.stringify(list, null, 2));
         return true;
     } catch (e) {
         console.error("Local reset requests db write error:", e);
@@ -322,25 +322,32 @@ async function pruneOldIncidents(list, isMongo = false) {
     });
 }
 
+// Atomic File Write Helper to prevent file corruption during concurrent operations or unexpected shutdowns
+function atomicWriteFileSync(filePath, dataStr) {
+    const tmpPath = `${filePath}.tmp.${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    fs.writeFileSync(tmpPath, dataStr, 'utf8');
+    fs.renameSync(tmpPath, filePath);
+}
+
 // Local File Helper Functions
 function getLocalIncidents() {
     try {
         if (!fs.existsSync(DB_FILE)) {
-            fs.writeFileSync(DB_FILE, JSON.stringify([], null, 2), 'utf8');
+            atomicWriteFileSync(DB_FILE, JSON.stringify([], null, 2));
             return [];
         }
         const raw = fs.readFileSync(DB_FILE, 'utf8');
         if (!raw.trim()) return [];
         return JSON.parse(raw);
     } catch (e) {
-        console.error("Local database read error:", e);
-        throw new Error("Database read error: incidents.json is invalid JSON or unreadable.");
+        console.error("Local database read error (returning fallback empty array):", e);
+        return [];
     }
 }
 
 function saveLocalIncidentsList(list) {
     try {
-        fs.writeFileSync(DB_FILE, JSON.stringify(list, null, 2), 'utf8');
+        atomicWriteFileSync(DB_FILE, JSON.stringify(list, null, 2));
         return true;
     } catch (e) {
         console.error("Local database write error:", e);
@@ -395,20 +402,20 @@ function getLocalUsers() {
         }
 
         if (modified) {
-            fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
+            atomicWriteFileSync(USERS_FILE, JSON.stringify(users, null, 2));
         }
 
         return users;
     } catch (e) {
-        console.error("Local users db read error:", e);
-        throw new Error("Database read error: users.json is invalid JSON or unreadable.");
+        console.error("Local users db read error (returning fallback empty object):", e);
+        return {};
     }
 }
 
 // Save users local database helper
 function saveLocalUsers(users) {
     try {
-        fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
+        atomicWriteFileSync(USERS_FILE, JSON.stringify(users, null, 2));
         return true;
     } catch (e) {
         console.error("Local users db write error:", e);
@@ -1589,8 +1596,8 @@ app.get('/api/incidents/:id/recommend-agent', async (req, res) => {
             const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
                       Math.cos(vLat * Math.PI / 180) * Math.cos(incident.lat * Math.PI / 180) *
                       Math.sin(dLng/2) * Math.sin(dLng/2);
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-            const distance = R * c;
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
+            const distance = isNaN(c) ? 0 : R * c;
 
             candidates.push({
                 username: v.username,

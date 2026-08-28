@@ -1358,9 +1358,14 @@ async function geocodeAddress(address) {
     // Fallback to OSM Nominatim API
     try {
         const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(address)}`);
+        if (!response.ok) return null;
         const data = await response.json();
         if (data && data.length > 0) {
-            return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+            const parsedLat = parseFloat(data[0].lat);
+            const parsedLon = parseFloat(data[0].lon);
+            if (!isNaN(parsedLat) && !isNaN(parsedLon)) {
+                return [parsedLat, parsedLon];
+            }
         }
     } catch (e) {
         console.error("Geocoding API error:", e);
@@ -1372,6 +1377,7 @@ async function geocodeAddress(address) {
 async function reverseGeocode(lat, lng) {
     try {
         const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
+        if (!response.ok) throw new Error(`HTTP error ${response.status}`);
         const data = await response.json();
         if (data && data.display_name) {
             return data.display_name.split(',').slice(0, 3).join(',').trim();
@@ -1789,16 +1795,18 @@ function setupUIEventListeners() {
                         const lat = parseFloat(item.lat);
                         const lng = parseFloat(item.lon);
                         
-                        viewer.camera.flyTo({
-                            destination: Cesium.Cartesian3.fromDegrees(lng, lat, 1200.0),
-                            orientation: {
-                                heading: Cesium.Math.toRadians(0.0),
-                                pitch: Cesium.Math.toRadians(-40.0),
-                                roll: 0.0
-                            },
-                            duration: 2.5
-                        });
-                        playAlertBeep(900, 0.15);
+                        if (!isNaN(lat) && !isNaN(lng)) {
+                            viewer.camera.flyTo({
+                                destination: Cesium.Cartesian3.fromDegrees(lng, lat, 1200.0),
+                                orientation: {
+                                    heading: Cesium.Math.toRadians(0.0),
+                                    pitch: Cesium.Math.toRadians(-40.0),
+                                    roll: 0.0
+                                },
+                                duration: 2.5
+                            });
+                            playAlertBeep(900, 0.15);
+                        }
                     });
                     suggestionsBox.appendChild(div);
                 });
