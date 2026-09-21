@@ -4,3 +4,5 @@ incidents.json
 reset_requests.json
 *.log
 .DS_Store
+.env
+
