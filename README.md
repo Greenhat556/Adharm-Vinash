@@ -284,3 +284,9 @@ style.css
 .
 Modified checkAuthSession(animate) in app.js to accept an animate flag. When logging in via the form, it runs checkAuthSession(true), which instantly exposes the Cesium 3D map controls in the background and slides the login screen UP (translateY(-100%)). After the 1.2-second transition completes, it fully hides the login screen (display: none) and disables the canvas loop.
 On page load, if a user session already exists, it hides the login overlay instantly to land them directly on the 3D map.
+
+## 5. Live GitHub Continuous Sync
+- Continuous bidirectional sync configured with `git@github.com:Greenhat556/Adharm-Vinash.git`.
+- Background watcher service `auto_sync.ps1` automatically detects local changes, creates timestamped commits, and pushes updates live to GitHub with debounced batching.
+- Manual sync triggers provided via `sync.bat` and `sync.ps1`.
+
